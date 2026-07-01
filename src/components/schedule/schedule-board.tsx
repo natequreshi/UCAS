@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef } from "react";
-import { assignSection, unassignSection, publishSolution } from "@/app/(dashboard)/schedule/actions";
+import { assignSection, unassignSection, publishSolution } from "@/lib/schedule-actions";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
