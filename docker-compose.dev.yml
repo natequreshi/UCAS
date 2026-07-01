@@ -1,0 +1,48 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────
+#  UCAS — Local Development Stack
+#  Starts only the backing services (DB + Redis).
+#  Run the Next.js app separately with: npm run dev
+#
+#  Usage:
+#    docker-compose -f docker-compose.dev.yml up -d
+#    docker-compose -f docker-compose.dev.yml down
+# ─────────────────────────────────────────────────
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: ucas_postgres_dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ucas
+      POSTGRES_USER: ucas_user
+      POSTGRES_PASSWORD: ucas_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - ucas_pgdata_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ucas_user -d ucas"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: ucas_redis_dev
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - ucas_redisdata_dev:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  ucas_pgdata_dev:
+  ucas_redisdata_dev:

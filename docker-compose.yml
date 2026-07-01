@@ -1,0 +1,71 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────
+#  UCAS — Production Stack (Dokploy / VPS)
+#  Managed by Dokploy — do not run manually.
+#  Dokploy handles SSL termination via Traefik.
+# ─────────────────────────────────────────────────
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ucas_app
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=${DATABASE_URL}
+      - NEXTAUTH_URL=${NEXTAUTH_URL}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - REDIS_URL=${REDIS_URL}
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
+      - SMTP_FROM=${SMTP_FROM}
+      - NEXT_PUBLIC_UNIVERSITY_NAME=${NEXT_PUBLIC_UNIVERSITY_NAME}
+      - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ucas.rule=Host(`${APP_DOMAIN}`)"
+      - "traefik.http.routers.ucas.tls.certresolver=letsencrypt"
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: ucas_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ucas
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ucas_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ucas"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: ucas_redis
+    restart: unless-stopped
+    volumes:
+      - ucas_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  ucas_pgdata:
+  ucas_redisdata:

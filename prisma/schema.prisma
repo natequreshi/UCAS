@@ -1,0 +1,775 @@
+// ─────────────────────────────────────────────────────────────────────────────
+//  UCAS — University Course Allocation System
+//  Prisma Schema — PostgreSQL 15
+//  Schema namespace: timetable (isolated from public schema)
+//
+//  Design inspired by UniTime (Apache 2.0) timetabling system.
+//  Key patterns:
+//   - Bitmask day encoding: Mon=1 Tue=2 Wed=4 Thu=8 Fri=16 Sat=32 Sun=64
+//   - Slot-based time:  slot = minutes_from_midnight / 5  (288 slots/day)
+//   - Preference levels: -2=Required … +2=Prohibited
+//   - Solution/Assignment: one solution per permutation, many assignments
+//   - UUID PKs, soft-delete via isActive, append-only audit log
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")   // bypasses PgBouncer pooler for migrations
+  schemas   = ["timetable"]
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  ENUMS
+// ═════════════════════════════════════════════════════════════════════════════
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  SCHEDULE_MANAGER
+  DEPARTMENT_CHAIR
+  TEACHER
+  STUDENT
+  VIEWER
+  @@schema("timetable")
+}
+
+enum TeacherType {
+  PERMANENT
+  CONTRACT
+  ADJUNCT
+  VISITING
+  @@schema("timetable")
+}
+
+enum TeacherTrack {
+  TEACHING
+  RESEARCH
+  @@schema("timetable")
+}
+
+enum AvailabilityWindow {
+  MORNING    // 8 AM – 12 PM
+  AFTERNOON  // 12 PM – 4 PM
+  EVENING    // 4 PM – 8 PM
+  FLEXIBLE   // any slot
+  @@schema("timetable")
+}
+
+enum CourseCategory {
+  COMPULSORY
+  ELECTIVE
+  ALLIED
+  @@schema("timetable")
+}
+
+enum ProgramLevel {
+  BS
+  MS
+  PHD
+  @@schema("timetable")
+}
+
+enum SemesterType {
+  FALL
+  SPRING
+  SUMMER
+  @@schema("timetable")
+}
+
+enum RoomType {
+  LECTURE_HALL
+  LAB_COMPUTER
+  LAB_PHYSICS
+  LAB_CHEMISTRY
+  LAB_ELECTRONICS
+  SEMINAR_ROOM
+  AUDITORIUM
+  @@schema("timetable")
+}
+
+enum SolutionStatus {
+  DRAFT
+  GENERATING
+  GENERATED
+  PUBLISHED
+  ARCHIVED
+  @@schema("timetable")
+}
+
+enum ProbationStatus {
+  ACTIVE
+  RESOLVED
+  DEGREE_AT_RISK
+  DEFERRED
+  @@schema("timetable")
+}
+
+enum ImportStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  @@schema("timetable")
+}
+
+enum GradingMode {
+  RELATIVE
+  ABSOLUTE
+  @@schema("timetable")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  AUTH — Users, Roles, Permissions
+// ═════════════════════════════════════════════════════════════════════════════
+
+model User {
+  id             String    @id @default(uuid())
+  email          String    @unique
+  name           String
+  passwordHash   String
+  role           UserRole  @default(VIEWER)
+  isActive       Boolean   @default(true)
+  mustChangePwd  Boolean   @default(false)
+  lastLoginAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  // Relations
+  teacherProfile Teacher?
+  studentProfile Student?
+  auditLogs      AuditLog[]
+  sessions       UserSession[]
+
+  @@schema("timetable")
+}
+
+model UserSession {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@schema("timetable")
+}
+
+// Computer-level access restriction (admin can bind a User to specific IP/MAC)
+model AccessRestriction {
+  id          String   @id @default(uuid())
+  userId      String
+  ipAddress   String?
+  macAddress  String?
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  @@schema("timetable")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  UNIVERSITY STRUCTURE — Buildings, Rooms, Departments, Programs
+// ═════════════════════════════════════════════════════════════════════════════
+
+model Building {
+  id           String   @id @default(uuid())
+  code         String   @unique // e.g. "CS-BLOCK", "NEW-BLOCK"
+  name         String
+  abbreviation String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  rooms Room[]
+
+  @@schema("timetable")
+}
+
+model Room {
+  id          String   @id @default(uuid())
+  buildingId  String
+  code        String   @unique // e.g. "CS-101", "LAB-A"
+  name        String
+  capacity    Int
+  roomType    RoomType @default(LECTURE_HALL)
+  hasProjector Boolean @default(false)
+  hasAC       Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  building    Building     @relation(fields: [buildingId], references: [id])
+  assignments Assignment[]
+
+  @@schema("timetable")
+}
+
+model Department {
+  id           String   @id @default(uuid())
+  code         String   @unique // e.g. "CS", "SE", "IT", "DS"
+  name         String
+  abbreviation String?
+  headId       String?  // FK to Teacher
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  programs Program[]
+  courses  Course[]
+  teachers Teacher[]
+
+  @@schema("timetable")
+}
+
+model Program {
+  id           String       @id @default(uuid())
+  departmentId String
+  code         String       @unique // e.g. "BSCS", "MSSE", "PHDIT"
+  name         String       // e.g. "BS Computer Science"
+  level        ProgramLevel
+  durationYears Int         @default(4)
+  totalCredits  Int         @default(130)
+  isActive     Boolean      @default(true)
+  createdAt    DateTime     @default(now())
+
+  department Department @relation(fields: [departmentId], references: [id])
+  roadmaps   Roadmap[]
+  students   Student[]
+  sections   Section[]
+
+  @@schema("timetable")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  ACADEMIC — Semesters, Batches
+// ═════════════════════════════════════════════════════════════════════════════
+
+model AcademicSemester {
+  id            String       @id @default(uuid())
+  code          String       @unique // e.g. "F2024", "S2025", "SUM2025"
+  name          String       // e.g. "Fall 2024"
+  semesterType  SemesterType
+  year          Int
+  startDate     DateTime
+  endDate       DateTime
+  isActive      Boolean      @default(true)
+  isCurrent     Boolean      @default(false)
+  isSummer      Boolean      @default(false)
+  createdAt     DateTime     @default(now())
+
+  sections          Section[]
+  scheduleSolutions ScheduleSolution[]
+  enrollments       Enrollment[]
+  academicProgress  AcademicProgress[]
+  probationRecords  ProbationRecord[]
+
+  @@schema("timetable")
+}
+
+// Batch = a cohort of students (F22, S22, F23, etc.)
+model Batch {
+  id           String   @id @default(uuid())
+  prefix       String   @unique // e.g. "F22", "S22", "F23"
+  label        String   // e.g. "Fall 2022"
+  year         Int      // 2022
+  semesterType SemesterType // FALL or SPRING
+  programId    String?  // optional: one program, or null if cross-program
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  students  Student[]
+  roadmaps  Roadmap[]
+
+  @@schema("timetable")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  COURSES & CURRICULUM
+// ═════════════════════════════════════════════════════════════════════════════
+
+model Course {
+  id             String        @id @default(uuid())
+  departmentId   String
+  code           String        @unique // e.g. "CS-301"
+  name           String        // e.g. "Data Structures"
+  creditHours    Int           @default(3)
+  labCreditHours Int           @default(0)
+  category       CourseCategory @default(COMPULSORY)
+  gradingMode    GradingMode   @default(RELATIVE)
+  hasLab         Boolean       @default(false)
+  isSummerOffered Boolean      @default(false)
+  description    String?
+  isActive       Boolean       @default(true)
+  createdAt      DateTime      @default(now())
+
+  department       Department        @relation(fields: [departmentId], references: [id])
+  prerequisites    CoursePrerequisite[] @relation("CoursePrereqs")
+  isPrereqFor      CoursePrerequisite[] @relation("PrereqOf")
+  roadmapEntries   RoadmapEntry[]
+  sections         Section[]
+  teacherPrefs     TeacherCoursePreference[]
+  courseOutlines   CourseOutline[]
+
+  @@schema("timetable")
+}
+
+model CoursePrerequisite {
+  id           String @id @default(uuid())
+  courseId     String // the course that HAS prerequisites
+  prereqId     String // the prerequisite course
+
+  course Course @relation("CoursePrereqs", fields: [courseId], references: [id])
+  prereq Course @relation("PrereqOf",     fields: [prereqId], references: [id])
+
+  @@unique([courseId, prereqId])
+  @@schema("timetable")
+}
+
+model CourseOutline {
+  id          String   @id @default(uuid())
+  courseId    String
+  version     String   // e.g. "2024"
+  content     String   // markdown or JSON
+  fileUrl     String?  // uploaded PDF URL
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  course Course @relation(fields: [courseId], references: [id])
+
+  @@schema("timetable")
+}
+
+// Roadmap = curriculum plan for a Program × Batch
+model Roadmap {
+  id          String   @id @default(uuid())
+  programId   String
+  batchId     String
+  name        String   // e.g. "BSCS F2022 Roadmap"
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  program Program       @relation(fields: [programId], references: [id])
+  batch   Batch         @relation(fields: [batchId], references: [id])
+  entries RoadmapEntry[]
+
+  @@unique([programId, batchId])
+  @@schema("timetable")
+}
+
+model RoadmapEntry {
+  id             String @id @default(uuid())
+  roadmapId      String
+  courseId       String
+  semesterNumber Int    // 1–8 for BS, 1–4 for MS
+  isOptional     Boolean @default(false)
+
+  roadmap Roadmap @relation(fields: [roadmapId], references: [id])
+  course  Course  @relation(fields: [courseId], references: [id])
+
+  @@unique([roadmapId, courseId])
+  @@schema("timetable")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  TEACHERS
+// ═════════════════════════════════════════════════════════════════════════════
+
+model Teacher {
+  id               String             @id @default(uuid())
+  userId           String             @unique
+  departmentId     String
+  employeeCode     String             @unique
+  designation      String             // Prof, Assoc Prof, Asst Prof, Lecturer, etc.
+  teacherType      TeacherType        @default(PERMANENT)
+  teacherTrack     TeacherTrack       @default(TEACHING)
+  maxCreditHours   Int                @default(9)  // per semester
+  hasSeniorityExemption Boolean       @default(false)
+  phone            String?
+  officeRoom       String?
+  joinDate         DateTime?
+  isActive         Boolean            @default(true)
+  createdAt        DateTime           @default(now())
+
+  user             User               @relation(fields: [userId], references: [id])
+  department       Department         @relation(fields: [departmentId], references: [id])
+  availabilities   TeacherAvailability[]
+  coursePrefs      TeacherCoursePreference[]
+  leaves           TeacherLeave[]
+  exemptions       TeacherExemption[]
+  assignments      Assignment[]
+  emails           EmailDispatch[]
+
+  @@schema("timetable")
+}
+
+// Days teacher is available (bitmask) and preferred window
+model TeacherAvailability {
+  id               String             @id @default(uuid())
+  teacherId        String
+  semesterId       String?            // null = all semesters
+  daysAvailable    Int                @default(62)  // Mon–Fri bitmask = 1+2+4+8+16=31... wait: Mon=1,Tue=2,Wed=4,Thu=8,Fri=16 → 31
+  preferredWindow  AvailabilityWindow @default(FLEXIBLE)
+  morningStart     Int?               // slot (min/5)
+  eveningEnd       Int?               // slot
+  freeDayCode      Int                @default(8)   // Thursday by default (8)
+  notes            String?
+  createdAt        DateTime           @default(now())
+
+  teacher Teacher @relation(fields: [teacherId], references: [id])
+
+  @@schema("timetable")
+}
+
+// 5-level preference for courses
+model TeacherCoursePreference {
+  id              String @id @default(uuid())
+  teacherId       String
+  courseId        String
+  // preference: -2=Required -1=StronglyPreferred 0=Preferred +1=Discouraged +2=Prohibited
+  preferenceLevel Int    @default(0) @db.SmallInt
+
+  teacher Teacher @relation(fields: [teacherId], references: [id])
+  course  Course  @relation(fields: [courseId], references: [id])
+
+  @@unique([teacherId, courseId])
+  @@schema("timetable")
+}
+
+model TeacherLeave {
+  id          String   @id @default(uuid())
+  teacherId   String
+  startDate   DateTime
+  endDate     DateTime
+  reason      String?
+  isApproved  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  teacher Teacher @relation(fields: [teacherId], references: [id])
+
+  @@schema("timetable")
+}
+
+model TeacherExemption {
+  id          String   @id @default(uuid())
+  teacherId   String
+  description String   // e.g. "Exempt from early morning classes due to seniority"
+  validFrom   DateTime
+  validTo     DateTime?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  teacher Teacher @relation(fields: [teacherId], references: [id])
+
+  @@schema("timetable")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  STUDENTS
+// ═════════════════════════════════════════════════════════════════════════════
+
+model Student {
+  id              String   @id @default(uuid())
+  userId          String   @unique
+  programId       String
+  batchId         String
+  registrationNo  String   @unique // e.g. "2022-CS-001"
+  batchPrefix     String   // e.g. "F22"
+  semesterNumber  Int      @default(1) // current semester
+  cgpa            Float    @default(0.0)
+  totalCreditsCompleted Int @default(0)
+  phone           String?
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+
+  user              User               @relation(fields: [userId], references: [id])
+  program           Program            @relation(fields: [programId], references: [id])
+  batch             Batch              @relation(fields: [batchId], references: [id])
+  enrollments       Enrollment[]
+  academicProgress  AcademicProgress[]
+  probationRecords  ProbationRecord[]
+  defermentRecords  DefermentRecord[]
+  emails            EmailDispatch[]
+
+  @@schema("timetable")
+}
+
+// Enrollment = student registered in a section for a semester
+model Enrollment {
+  id          String    @id @default(uuid())
+  studentId   String
+  sectionId   String
+  semesterId  String
+  grade       String?   // A, B+, B, C, etc.
+  gradePoint  Float?
+  isRepeat    Boolean   @default(false)
+  enrolledAt  DateTime  @default(now())
+
+  student  Student          @relation(fields: [studentId], references: [id])
+  section  Section          @relation(fields: [sectionId], references: [id])
+  semester AcademicSemester @relation(fields: [semesterId], references: [id])
+
+  @@unique([studentId, sectionId, semesterId])
+  @@schema("timetable")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  SECTIONS — A section is one delivery of a course in a semester
+// ═════════════════════════════════════════════════════════════════════════════
+
+model Section {
+  id           String   @id @default(uuid())
+  courseId     String
+  programId    String
+  semesterId   String
+  sectionCode  String   // e.g. "A", "B", "C"
+  capacity     Int      @default(40)
+  enrolled     Int      @default(0)
+  semesterNumber Int    // roadmap position (1–8)
+  gradingMode  GradingMode @default(RELATIVE)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  course      Course           @relation(fields: [courseId], references: [id])
+  program     Program          @relation(fields: [programId], references: [id])
+  semester    AcademicSemester @relation(fields: [semesterId], references: [id])
+  enrollments Enrollment[]
+  assignments Assignment[]
+
+  @@unique([courseId, programId, semesterId, sectionCode])
+  @@schema("timetable")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  SCHEDULING CORE — Time Patterns, Solutions, Assignments
+//  (UniTime-inspired)
+// ═════════════════════════════════════════════════════════════════════════════
+
+// A TimePattern defines when a class meets (days + time slots)
+model TimePattern {
+  id           String @id @default(uuid())
+  semesterId   String
+  name         String // e.g. "MWF 55min", "TT 110min"
+  daysCode     Int    // bitmask: Mon=1 Tue=2 Wed=4 Thu=8 Fri=16 Sat=32
+  slot         Int    // start slot: minutes_from_midnight / 5 (e.g. 8:00 AM = 96)
+  slotsPerMtg  Int    // slots per meeting (55min = 11 slots, 110min = 22 slots)
+  breakTime    Int    @default(0) // break between meetings (slots)
+  minPerMtg    Int    // minutes per meeting (55, 110, etc.)
+  isActive     Boolean @default(true)
+
+  assignments Assignment[]
+
+  @@schema("timetable")
+}
+
+// One solution = one complete timetable permutation for a semester
+model ScheduleSolution {
+  id               String         @id @default(uuid())
+  semesterId       String
+  name             String         @default("Permutation 1")
+  status           SolutionStatus @default(DRAFT)
+  fitnessScore     Float          @default(0)
+  permutationIndex Int            @default(1)
+  solverParams     Json?          // CSP/GA parameters used
+  generatedAt      DateTime?
+  publishedAt      DateTime?
+  createdBy        String?        // userId
+  createdAt        DateTime       @default(now())
+
+  semester    AcademicSemester        @relation(fields: [semesterId], references: [id])
+  assignments Assignment[]
+  constraints DistributionConstraint[]
+
+  @@schema("timetable")
+}
+
+// One assignment = one section placed at a time/room/instructor in a solution
+model Assignment {
+  id            String   @id @default(uuid())
+  solutionId    String
+  sectionId     String
+  instructorId  String?  // FK to Teacher (null if TBA)
+  roomId        String?  // FK to Room (null if TBA)
+  timePatternId String
+  slot          Int      // start slot (redundant with timePattern.slot but allows override)
+  daysCode      Int      // days bitmask (redundant but allows override)
+  isLocked      Boolean  @default(false) // locked assignments won't be moved by solver
+  notes         String?
+  createdAt     DateTime @default(now())
+
+  solution    ScheduleSolution @relation(fields: [solutionId], references: [id])
+  section     Section          @relation(fields: [sectionId], references: [id])
+  instructor  Teacher?         @relation(fields: [instructorId], references: [id])
+  room        Room?            @relation(fields: [roomId], references: [id])
+  timePattern TimePattern      @relation(fields: [timePatternId], references: [id])
+
+  @@schema("timetable")
+}
+
+// Distribution constraints (UniTime pattern): SAME_ROOM, BACK_TO_BACK, SPREAD, etc.
+model DistributionConstraint {
+  id               String  @id @default(uuid())
+  solutionId       String
+  distributionType String  // "SAME_ROOM", "BACK_TO_BACK", "SPREAD", "SAME_DAYS", etc.
+  // preference: -2=Required … +2=Prohibited
+  distributionPref Int     @default(0) @db.SmallInt
+  sectionIds       String[] // array of section UUIDs this constraint applies to
+  isActive         Boolean @default(true)
+
+  solution ScheduleSolution @relation(fields: [solutionId], references: [id])
+
+  @@schema("timetable")
+}
+
+// Special scheduling constraints (Friday prayer, free day, time windows)
+model SchedulingConstraint {
+  id              String   @id @default(uuid())
+  constraintKey   String   @unique // e.g. "FRIDAY_PRAYER", "FREE_DAY_TEACHER", "BS_LATEST_END"
+  label           String
+  value           String   // configurable value (e.g. "12:30", "18:00", "8")
+  isEnabled       Boolean  @default(true)
+  description     String?
+  updatedAt       DateTime @updatedAt
+
+  @@schema("timetable")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  ACADEMIC PROGRESS, PROBATION, DEFERMENT
+// ═════════════════════════════════════════════════════════════════════════════
+
+model AcademicProgress {
+  id                   String   @id @default(uuid())
+  studentId            String
+  semesterId           String
+  semesterGpa          Float
+  cumulativeCgpa       Float
+  creditsAttempted     Int
+  creditsCompleted     Int
+  totalCreditsCompleted Int
+  createdAt            DateTime @default(now())
+
+  student  Student          @relation(fields: [studentId], references: [id])
+  semester AcademicSemester @relation(fields: [semesterId], references: [id])
+
+  @@unique([studentId, semesterId])
+  @@schema("timetable")
+}
+
+model ProbationRecord {
+  id                   String          @id @default(uuid())
+  studentId            String
+  semesterId           String          // semester when probation triggered
+  consecutiveLowCount  Int             // how many consecutive CGPAs < 2.0
+  status               ProbationStatus
+  maxPossibleGpa       Float?          // calculated: can they recover?
+  requiresDeferment    Boolean         @default(false)
+  notes                String?
+  resolvedAt           DateTime?
+  createdAt            DateTime        @default(now())
+
+  student  Student          @relation(fields: [studentId], references: [id])
+  semester AcademicSemester @relation(fields: [semesterId], references: [id])
+
+  @@schema("timetable")
+}
+
+model DefermentRecord {
+  id            String   @id @default(uuid())
+  studentId     String
+  semesterId    String   // semester being deferred into
+  selectedCourseIds String[] // array of course UUIDs selected for repeat
+  timetableJson Json?    // generated personal timetable for deferred section
+  approvedBy    String?  // userId
+  isApproved    Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  student Student @relation(fields: [studentId], references: [id])
+
+  @@schema("timetable")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  DATA IMPORT — Excel bulk import tracking
+// ═════════════════════════════════════════════════════════════════════════════
+
+model ImportJob {
+  id           String       @id @default(uuid())
+  entityType   String       // "TEACHER", "STUDENT", "COURSE", "SECTION", etc.
+  fileName     String
+  totalRows    Int          @default(0)
+  processedRows Int         @default(0)
+  errorRows    Int          @default(0)
+  status       ImportStatus @default(PENDING)
+  errorLog     Json?        // array of {row, field, message}
+  importedBy   String       // userId
+  startedAt    DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime     @default(now())
+
+  @@schema("timetable")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  EMAIL DISPATCH
+// ═════════════════════════════════════════════════════════════════════════════
+
+model EmailDispatch {
+  id          String   @id @default(uuid())
+  toTeacherId String?
+  toStudentId String?
+  subject     String
+  body        String
+  attachments String[] // file URLs
+  sentAt      DateTime?
+  status      String   @default("PENDING") // PENDING, SENT, FAILED
+  errorMsg    String?
+  createdAt   DateTime @default(now())
+
+  teacher Teacher? @relation(fields: [toTeacherId], references: [id])
+  student Student? @relation(fields: [toStudentId], references: [id])
+
+  @@schema("timetable")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  AUDIT LOG — SHA-256 hash-chained, append-only
+// ═════════════════════════════════════════════════════════════════════════════
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  userId       String?
+  action       String   // "CREATE", "UPDATE", "DELETE", "LOGIN", etc.
+  entityType   String   // "User", "Section", "Assignment", etc.
+  entityId     String?
+  changesBefore Json?
+  changesAfter  Json?
+  ipAddress    String?
+  previousHash String?  // SHA-256 hash of previous audit log entry
+  currentHash  String   // SHA-256 hash of this entry's content
+  createdAt    DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@schema("timetable")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  APP CONFIGURATION — Key-value settings store
+// ═════════════════════════════════════════════════════════════════════════════
+
+model AppConfig {
+  key         String   @id
+  value       String
+  label       String?
+  description String?
+  updatedAt   DateTime @updatedAt
+  updatedBy   String?
+
+  @@schema("timetable")
+}
