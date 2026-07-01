@@ -1,21 +1,29 @@
 import { Header } from "@/components/layout/header";
+import { prisma } from "@/lib/prisma";
+import { RoomsClient } from "@/components/rooms/rooms-client";
 
-export const metadata = { title: "Rooms" };
+export const metadata = { title: "Rooms & Buildings" };
 
-export default function RoomsPage() {
+export default async function RoomsPage() {
+  const [buildings, rooms] = await Promise.all([
+    prisma.building.findMany({
+      orderBy: { name: "asc" },
+      include: { _count: { select: { rooms: true } } },
+    }),
+    prisma.room.findMany({
+      orderBy: [{ building: { name: "asc" } }, { code: "asc" }],
+      include: { building: true },
+    }),
+  ]);
+
   return (
     <>
-      <Header title="Rooms" subtitle="This module is under active development" />
+      <Header
+        title="Rooms & Buildings"
+        subtitle="Manage lecture halls, labs, and building infrastructure"
+      />
       <main className="flex-1 p-6">
-        <div className="max-w-lg mx-auto mt-16 text-center">
-          <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
-            <span className="text-2xl">🚧</span>
-          </div>
-          <h2 className="text-xl font-semibold text-gray-900 mb-2">Rooms Module</h2>
-          <p className="text-muted-foreground text-sm">
-            This module is scheduled for an upcoming version. Check the dashboard roadmap for the timeline.
-          </p>
-        </div>
+        <RoomsClient buildings={buildings} rooms={rooms} />
       </main>
     </>
   );

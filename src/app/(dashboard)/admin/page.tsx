@@ -1,21 +1,22 @@
 import { Header } from "@/components/layout/header";
+import { prisma } from "@/lib/prisma";
+import { AdminClient } from "@/components/admin/admin-client";
 
-export const metadata = { title: "Admin" };
+export const metadata = { title: "Administration" };
 
-export default function AdminPage() {
+export default async function AdminPage() {
+  const users = await prisma.user.findMany({
+    orderBy: { createdAt: "desc" },
+  });
+
   return (
     <>
-      <Header title="Admin" subtitle="This module is under active development" />
+      <Header
+        title="Administration"
+        subtitle="Manage users, roles, and system access"
+      />
       <main className="flex-1 p-6">
-        <div className="max-w-lg mx-auto mt-16 text-center">
-          <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
-            <span className="text-2xl">🚧</span>
-          </div>
-          <h2 className="text-xl font-semibold text-gray-900 mb-2">Admin Module</h2>
-          <p className="text-muted-foreground text-sm">
-            This module is scheduled for an upcoming version. Check the dashboard roadmap for the timeline.
-          </p>
-        </div>
+        <AdminClient users={users} />
       </main>
     </>
   );

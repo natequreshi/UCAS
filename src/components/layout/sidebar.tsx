@@ -4,10 +4,13 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Calendar,
+  CalendarDays,
   Users,
+  Users2,
   GraduationCap,
   BookOpen,
   Building2,
+  Building,
   LayoutGrid,
   TrendingUp,
   AlertTriangle,
@@ -15,6 +18,7 @@ import {
   FileText,
   Shield,
   BarChart3,
+  LibraryBig,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -29,6 +33,10 @@ const navItems = [
   {
     group: "Academic Data",
     items: [
+      { label: "Departments", href: "/departments", icon: Building },
+      { label: "Programs", href: "/programs", icon: LibraryBig },
+      { label: "Semesters", href: "/semesters", icon: CalendarDays },
+      { label: "Batches", href: "/batches", icon: Users2 },
       { label: "Teachers", href: "/teachers", icon: Users },
       { label: "Students", href: "/students", icon: GraduationCap },
       { label: "Courses & Roadmaps", href: "/courses", icon: BookOpen },
