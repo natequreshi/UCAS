@@ -106,7 +106,8 @@ export function UserForm({ open, onOpenChange, user, onSuccess }: UserFormProps)
   });
 
   const form = isEdit ? updateForm : createForm;
-  const { handleSubmit, reset, setValue, watch, formState } = form;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { handleSubmit, reset, setValue, watch, register, formState } = form as any;
   const { errors, isSubmitting } = formState;
 
   const roleValue = watch("role" as any);
@@ -172,7 +173,7 @@ export function UserForm({ open, onOpenChange, user, onSuccess }: UserFormProps)
             <Input
               id="u-name"
               placeholder="Full name"
-              {...form.register("name")}
+              {...register("name")}
             />
             {(errors as any).name && (
               <p className="text-xs text-destructive">
